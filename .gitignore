@@ -19,3 +19,8 @@
 
 # Go workspace file
 go.work
+
+# Misc
+.idea/
+go-producer-consumer-demo
+config.json
