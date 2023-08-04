@@ -12,7 +12,6 @@ func main() {
 	_ = config.InitConfig()
 
 	// Channels for communication between producer and consumers
-	dataChan := make(chan int)      // Send data from producer to consumers
 	errorChan := make(chan error)   // Send errors from goroutines to main goroutine
 	doneChan := make(chan struct{}) // Signal when all goroutines are done
 
@@ -20,17 +19,23 @@ func main() {
 	var wg sync.WaitGroup
 
 	// Start the producer goroutine
+	producerDataChan := make(chan int)
 	stopProducer := make(chan struct{}) // Stop signal for the producer
 	wg.Add(1)
-	go producer(dataChan, errorChan, stopProducer, doneChan, &wg)
+	go producer(producerDataChan, errorChan, stopProducer, doneChan, &wg)
 
 	// Start the consumer goroutines
+	consumerDataChans := make([]chan int, config.GetConfig().ConsumerCount)
 	stopWorkers := make([]chan struct{}, config.GetConfig().ConsumerCount) // Slice of stop signals for the consumers
 	for i := 0; i < config.GetConfig().ConsumerCount; i++ {
+		consumerDataChans[i] = make(chan int)
 		stopWorkers[i] = make(chan struct{})
 		wg.Add(1)
-		go consumer(i, dataChan, errorChan, stopWorkers[i], doneChan, &wg)
+		go consumer(i, consumerDataChans[i], errorChan, stopWorkers[i], doneChan, &wg)
 	}
+
+	// start a goroutine for distributing data from producer to consumers
+	go FanOutWithChannel(producerDataChan, consumerDataChans...)
 
 	// Monitor for errors from goroutines and done signal
 	select {
@@ -158,10 +163,31 @@ func FanIn[T any](channels ...chan T) chan T {
 	return merged
 }
 
-func FanOut[T any](data T, channels ...chan T) {
+func FanOutWithData[T any](data T, channels ...chan T) {
 	for _, channel := range channels {
 		go func(channel chan T) {
 			channel <- data
 		}(channel)
+	}
+}
+
+func FanOutWithChannel[T any](inDataChan chan T, outDataChans ...chan T) {
+	i := 0
+	for {
+		select {
+		case data, ok := <-inDataChan:
+			if !ok {
+				// inDataChan has been closed which means no more data from producer
+				// close all the outDataChans
+				for _, ch := range outDataChans {
+					close(ch)
+				}
+				return
+			}
+			go func() {
+				outDataChans[i] <- data
+			}()
+			i = (i + 1) % len(outDataChans)
+		}
 	}
 }
